@@ -112,10 +112,12 @@ export function TrackNetAnalysisProvider({ children }: { children: ReactNode }) 
           setPhase("completed");
         } catch (pollError) {
           if (runTokenRef.current !== token) return;
+          // By status, not message text: messages can quote addresses like :4040.
           const missingJob =
             options?.clearMissingJob &&
             pollError instanceof Error &&
-            pollError.message.includes("404");
+            "status" in pollError &&
+            pollError.status === 404;
           if (missingJob) {
             jobRef.current = null;
             setJob(null);

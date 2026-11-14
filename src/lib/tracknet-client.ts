@@ -70,10 +70,39 @@ export interface LiveTrackNetConnection {
   close: () => void;
 }
 
-const TRACKNET_URL = (import.meta.env.VITE_TRACKNET_URL ?? "http://127.0.0.1:8000").replace(
+const TRACKNET_URL = (import.meta.env?.VITE_TRACKNET_URL ?? "http://127.0.0.1:8000").replace(
   /\/$/,
   "",
 );
+
+/** A TrackNet answer that was not OK, with its HTTP status. */
+export class TrackNetHttpError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
+/**
+ * The browser reports a stopped service, a page the service refuses and a
+ * crash inside it alike, as "Failed to fetch".
+ */
+async function trackNetFetch(path: string, init: RequestInit) {
+  try {
+    return await fetch(`${TRACKNET_URL}${path}`, init);
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    const page = globalThis.location?.origin;
+    throw new Error(
+      `Could not reach TrackNet at ${TRACKNET_URL}${page ? ` from this page (${page})` : ""}. ` +
+        "Check that the TrackNet service is running and look for an error in its window. If " +
+        "it was started before this update, restart it: it now accepts pages on any port of " +
+        "this computer. With the V3 engine, other addresses go in TRACKNET_ALLOW_ORIGINS.",
+      { cause: error },
+    );
+  }
+}
 
 function websocketUrl(path: string) {
   const url = new URL(`${TRACKNET_URL}${path}`);
@@ -105,7 +134,7 @@ function absoluteUrl(path: string) {
 }
 
 export async function getTrackNetHealth(signal?: AbortSignal): Promise<TrackNetHealth> {
-  const response = await fetch(`${TRACKNET_URL}/health`, {
+  const response = await trackNetFetch("/health", {
     signal: requestSignal(signal, 10_000),
   });
   if (!response.ok) throw new Error(`TrackNet health check failed (${response.status}).`);
@@ -120,7 +149,7 @@ export async function submitTrackNetVideo(
   const body = new FormData();
   body.append("video", file, file.name);
   if (settings) body.append("settings", JSON.stringify(settings));
-  const response = await fetch(`${TRACKNET_URL}/analyze`, {
+  const response = await trackNetFetch("/analyze", {
     method: "POST",
     body,
     signal: requestSignal(signal, 120_000),
@@ -136,7 +165,7 @@ export async function submitTrackNetVideo(
 export async function createTrackNetPreview(file: File, signal?: AbortSignal): Promise<string> {
   const body = new FormData();
   body.append("video", file, file.name);
-  const response = await fetch(`${TRACKNET_URL}/preview`, {
+  const response = await trackNetFetch("/preview", {
     method: "POST",
     body,
     signal: requestSignal(signal, 120_000),
@@ -164,10 +193,11 @@ export async function waitForTrackNet(
   let lastChange = Date.now();
   for (;;) {
     signal?.throwIfAborted();
-    const response = await fetch(`${TRACKNET_URL}/jobs/${encodeURIComponent(jobId)}`, {
+    const response = await trackNetFetch(`/jobs/${encodeURIComponent(jobId)}`, {
       signal: requestSignal(signal, 20_000),
     });
-    if (!response.ok) throw new Error(`TrackNet status failed (${response.status}).`);
+    if (!response.ok)
+      throw new TrackNetHttpError(`TrackNet status failed (${response.status}).`, response.status);
     const status = (await response.json()) as TrackNetJobStatus;
     if (status.progress !== lastProgress) {
       lastProgress = status.progress;
@@ -199,12 +229,15 @@ export async function getTrackNetResult(
   jobId: string,
   signal?: AbortSignal,
 ): Promise<TrackNetResult> {
-  const response = await fetch(`${TRACKNET_URL}/jobs/${encodeURIComponent(jobId)}/result`, {
+  const response = await trackNetFetch(`/jobs/${encodeURIComponent(jobId)}/result`, {
     signal: requestSignal(signal, 30_000),
   });
   if (!response.ok) {
     const detail = await response.text();
-    throw new Error(detail || `TrackNet result failed (${response.status}).`);
+    throw new TrackNetHttpError(
+      detail || `TrackNet result failed (${response.status}).`,
+      response.status,
+    );
   }
   const result = (await response.json()) as TrackNetResult;
   return { ...result, video_url: absoluteUrl(result.video_url) };
@@ -213,7 +246,7 @@ export async function getTrackNetResult(
 export async function cancelTrackNetJob(jobId: string): Promise<void> {
   // Older services have no cancellation route. Clearing their UI still works.
   try {
-    await fetch(`${TRACKNET_URL}/jobs/${encodeURIComponent(jobId)}`, {
+    await trackNetFetch(`/jobs/${encodeURIComponent(jobId)}`, {
       method: "DELETE",
       signal: AbortSignal.timeout(5000),
     });
