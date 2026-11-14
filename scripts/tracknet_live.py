@@ -11,7 +11,12 @@ import tracknet_service as service
 from fastapi import WebSocket, WebSocketDisconnect
 import numpy as np
 
+from local_pages import AllowLocalPages
+
 app = service.app
+# The original service's CORS list may name only port 5173; the app's dev
+# server may be on another port.
+app.add_middleware(AllowLocalPages)
 live_lock = asyncio.Lock()
 
 

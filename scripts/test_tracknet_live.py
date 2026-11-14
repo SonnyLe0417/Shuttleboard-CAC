@@ -5,14 +5,24 @@ import sys
 import types
 import numpy as np
 from fastapi import FastAPI, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.testclient import TestClient
 
 seen = []
 def detect(model, windows):
     seen.extend(int(frame[0, 0]) for frame in windows[0])
     return [(0.4, 0.6, 0.9, True)]
 
+# The original service keeps its own CORS rule, here one naming only port 5173.
+original = FastAPI()
+original.add_middleware(CORSMiddleware, allow_origins=['http://127.0.0.1:5173'],
+                        allow_methods=['GET', 'POST', 'DELETE'])
+@original.post('/analyze')
+async def analyze():
+    return {'job_id': 'a' * 32}
+
 sys.modules['tracknet_service'] = types.SimpleNamespace(
-    app=FastAPI(), _load_model=lambda: object(), _detect_batch=detect,
+    app=original, _load_model=lambda: object(), _detect_batch=detect,
     _active_backend='test', _active_device='test')
 import tracknet_live
 
@@ -42,3 +52,27 @@ async def test():
     print('PASS: service binary decoding, frame order, timestamps, invalid packet')
 
 asyncio.run(test())
+
+def test_local_pages():
+    client = TestClient(tracknet_live.app)
+    # Vite moves to 5174, 5175, ... when 5173 is taken.
+    for origin in ['http://127.0.0.1:5173', 'http://127.0.0.1:5175', 'http://localhost:3000']:
+        response = client.post('/analyze', headers={'origin': origin})
+        assert response.status_code == 200
+        assert response.headers['access-control-allow-origin'] == origin, origin
+    preflight = client.options('/analyze', headers={
+        'origin': 'http://127.0.0.1:5175', 'access-control-request-method': 'DELETE'})
+    assert preflight.status_code == 200
+    assert preflight.headers['access-control-allow-methods'] == 'DELETE'
+    # Any other page is still the original service's call.
+    foreign = client.post('/analyze', headers={'origin': 'https://example.com'})
+    assert 'access-control-allow-origin' not in foreign.headers
+    assert client.options('/analyze', headers={
+        'origin': 'https://example.com', 'access-control-request-method': 'POST'}).status_code == 400
+    with client.websocket_connect('/live/tracknet-fast', headers={'origin': 'http://127.0.0.1:5175'}) as socket:
+        assert socket.receive_json()['type'] == 'ready'
+        socket.send_bytes(b'bad')
+        assert socket.receive_json()['type'] == 'error'
+    print('PASS: local pages on any port, other origins left to the service, live socket')
+
+test_local_pages()

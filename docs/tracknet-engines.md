@@ -50,6 +50,13 @@ The launcher checks `/health` for `model_loaded`, `backend`, and `device` using
 the existing readiness contract. `TRACKNET_PORT`, `SHUTTLEBOARD_PORT`,
 `TRACKNET_DEVICE`, and the existing inference/thread settings remain available.
 If changing `TRACKNET_PORT`, also configure `VITE_TRACKNET_URL` for the frontend.
+Both services accept requests from pages this computer serves (`localhost`,
+`127.0.0.1` or `[::1]`) on any port, so an app that `npm run dev` moved to 5174
+or 5175 can still analyze videos. To use the V3 service from another address,
+such as a phone on the same network, list it in `TRACKNET_ALLOW_ORIGINS`
+(comma-separated); V3 refuses uploads from any other page rather than analyzing
+a video whose result the browser would hide. With the current engine, other
+addresses follow the original `tracknet_service.py`'s own CORS settings.
 
 Run the focused launcher checks without installing either model runtime:
 
