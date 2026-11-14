@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getTrackNetLaunchConfig } from "./tracknet-launch-config.mjs";
@@ -129,6 +130,20 @@ async function waitForTrackNetModel() {
   );
 }
 
+// Another server on the app's port would answer the readiness check and the
+// prewarm below before Vite gave up on the port.
+const appPortFree = await new Promise((resolvePort) => {
+  const probe = createServer();
+  probe.once("error", () => resolvePort(false));
+  probe.listen(Number(appPort), "127.0.0.1", () => probe.close(() => resolvePort(true)));
+});
+if (!appPortFree) {
+  console.error(
+    `Port ${appPort} is already in use. Close the other dev server, or set SHUTTLEBOARD_PORT.`,
+  );
+  process.exit(1);
+}
+
 process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
 
@@ -145,6 +160,8 @@ start(
     "127.0.0.1",
     "--port",
     appPort,
+    // Never move to another port: the address printed and prewarmed is this one.
+    "--strictPort",
   ],
   appDir,
 );

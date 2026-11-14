@@ -50,6 +50,9 @@ The launcher checks `/health` for `model_loaded`, `backend`, and `device` using
 the existing readiness contract. `TRACKNET_PORT`, `SHUTTLEBOARD_PORT`,
 `TRACKNET_DEVICE`, and the existing inference/thread settings remain available.
 If changing `TRACKNET_PORT`, also configure `VITE_TRACKNET_URL` for the frontend.
+The launcher stops if `SHUTTLEBOARD_PORT` is taken rather than moving the app to
+another port; close the other dev server or choose a free port.
+
 Both services accept requests from pages this computer serves (`localhost`,
 `127.0.0.1` or `[::1]`) on any port, so an app that `npm run dev` moved to 5174
 or 5175 can still analyze videos. To use the V3 service from another address,
