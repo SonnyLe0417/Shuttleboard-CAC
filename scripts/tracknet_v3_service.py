@@ -2,8 +2,9 @@
 
 Model imports and initialization happen in the lifespan's background worker.
 TRACKNET_DATA_DIR, TRACKNET_MAX_UPLOAD_BYTES (default 1 GiB),
-TRACKNET_ALLOW_ORIGINS, TRACKNET_FFMPEG and TRACKNET_PREVIEW_TIMEOUT configure
-the service; V3Engine owns the remaining TRACKNET_* model settings. Live V3
+TRACKNET_ALLOW_ORIGINS (pages beyond this machine's own, which may always use
+it), TRACKNET_FFMPEG and TRACKNET_PREVIEW_TIMEOUT configure the service;
+V3Engine owns the remaining TRACKNET_* model settings. Live V3
 inference is deliberately unsupported: use the current engine for live play.
 """
 
@@ -34,6 +35,8 @@ from fastapi.responses import FileResponse, Response
 from python_multipart import MultipartParser
 from python_multipart.multipart import parse_options_header
 from starlette.background import BackgroundTask
+
+from local_pages import LOCAL_ORIGIN
 
 
 LOG = logging.getLogger(__name__)
@@ -481,14 +484,20 @@ def create_app(
             await asyncio.to_thread(state.executor.shutdown, wait=True)
 
     app = FastAPI(title="TrackNet V3 Service", version="3.0.0", lifespan=lifespan)
+    allowed_origins = [origin.strip() for origin in os.getenv("TRACKNET_ALLOW_ORIGINS", "").split(",") if origin.strip()]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[origin.strip() for origin in os.getenv(
-            "TRACKNET_ALLOW_ORIGINS",
-            "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080",
-        ).split(",") if origin.strip()],
+        allow_origins=allowed_origins, allow_origin_regex=LOCAL_ORIGIN.pattern,
         allow_credentials=True, allow_methods=["GET", "POST", "DELETE"], allow_headers=["*"],
     )
+
+    def refuse_foreign_page(request: Request) -> None:
+        # The browser hides the answer from a page CORS does not allow, but an
+        # upload is a simple request, so it would still start work nobody sees.
+        # The same rule as the CORS middleware's, "*" included.
+        origin = request.headers.get("origin")
+        if origin and "*" not in allowed_origins and origin not in allowed_origins and not LOCAL_ORIGIN.fullmatch(origin):
+            raise HTTPException(403, f"{origin} may not use this service; add it to TRACKNET_ALLOW_ORIGINS.")
 
     @app.get("/health")
     async def health():
@@ -506,6 +515,7 @@ def create_app(
 
     @app.post("/analyze", status_code=202)
     async def analyze(request: Request):
+        refuse_foreign_page(request)
         state = app.state.service
         if state.engine is None or state.stopping.is_set():
             raise HTTPException(503, state.model_error or "V3 model is loading; retry shortly.")
@@ -569,6 +579,7 @@ def create_app(
 
     @app.post("/preview")
     async def preview(request: Request):
+        refuse_foreign_page(request)
         state = app.state.service
         directory = Path(tempfile.mkdtemp(prefix="preview-", dir=state.root))
         cancelled = threading.Event()

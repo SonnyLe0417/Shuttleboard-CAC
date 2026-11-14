@@ -514,3 +514,50 @@ def test_cors_supports_cancel(running):
     })
     assert response.status_code == 200
     assert "DELETE" in response.headers["access-control-allow-methods"]
+
+
+def upload_from(client, origin, path="/analyze"):
+    return client.post(path, headers={"origin": origin}, files={"video": ("rally.mp4", b"video-data", "video/mp4")})
+
+
+def test_pages_from_this_machine_may_use_any_port(running):
+    # Vite moves to 5174, 5175, ... when 5173 is taken.
+    client, _, _ = running
+    for origin in ["http://127.0.0.1:5175", "http://localhost:3000", "http://[::1]:5173", "http://localhost"]:
+        response = upload_from(client, origin)
+        assert response.status_code == 202, origin
+        assert response.headers["access-control-allow-origin"] == origin
+    preflight = client.options("/jobs/" + "a" * 32, headers={
+        "origin": "http://127.0.0.1:5175", "access-control-request-method": "DELETE",
+    })
+    assert preflight.status_code == 200
+    assert preflight.headers["access-control-allow-origin"] == "http://127.0.0.1:5175"
+
+
+def test_a_page_from_elsewhere_cannot_start_work_it_cannot_see(running):
+    # The browser would hide the answer, so an accepted upload would analyse
+    # a whole video for nobody, again on every retry.
+    client, app, _ = running
+    for origin in ["https://example.com", "http://localhost.example.com", "http://127.0.0.1.example.com:5173"]:
+        response = upload_from(client, origin)
+        assert response.status_code == 403, origin
+        assert "access-control-allow-origin" not in response.headers
+        assert upload_from(client, origin, "/preview").status_code == 403
+    assert not app.state.service.jobs
+    assert submit(client)  # scripts and the launcher send no origin
+
+
+def test_configured_origins_are_allowed_too(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRACKNET_ALLOW_ORIGINS", "http://192.168.1.20:5173, https://court.example")
+    app = service.create_app(data_root=tmp_path, engine_factory=FakeEngine)
+    with TestClient(app) as client:
+        ready(client)
+        for origin in ["http://192.168.1.20:5173", "https://court.example", "http://127.0.0.1:5175"]:
+            response = upload_from(client, origin)
+            assert response.status_code == 202, origin
+            assert response.headers["access-control-allow-origin"] == origin
+        assert upload_from(client, "http://192.168.1.21:5173").status_code == 403
+    monkeypatch.setenv("TRACKNET_ALLOW_ORIGINS", "*")
+    with TestClient(service.create_app(data_root=tmp_path, engine_factory=FakeEngine)) as client:
+        ready(client)
+        assert upload_from(client, "http://192.168.1.21:5173").status_code == 202
